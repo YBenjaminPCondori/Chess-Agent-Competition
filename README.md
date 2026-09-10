@@ -1,0 +1,2 @@
+# Chess Agent Competition
+
