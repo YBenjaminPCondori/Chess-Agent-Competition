@@ -12,7 +12,7 @@ make play
 ```
 
 That plays your agent against a baseline over a full 120 s + 0.5 s game and prints the result.
-When you like it, `make zip` and drop `submission.zip` on your dashboard.
+When you like it, run `make zip` and drop `submission.zip` on your dashboard.
 
 ## Writing an agent
 
@@ -28,6 +28,7 @@ The fork ships a legal random-mover, so the loop works before you write anything
 ```
 make play                                          # one game, real time control
 make arena                                         # 16 fast games, prints a score
+make live                                          # alias for make arena
 make play FEN="<fen>"                              # start from a given position
 uv run python -m harness.play --black baselines/minimax --pgn game.pgn
 uv run python -m harness.arena --opponent ../my-old-version --games 200
@@ -84,19 +85,19 @@ harness/rules.py     the event constants, and eight openings the rated ladder pl
 harness/sandbox.py   the one process, spoken to as the platform speaks to a container
 harness/play.py      one game between two agent directories
 harness/arena.py     many games, with a score and an interval
-harness/package.py   builds submission.zip and plays the platform's two smoke games from it
+harness/package.py   builds submission.zip
 docs/IDEAS.md        where the strength actually comes from
 ```
 
 `make zip` ships `agent.py`, every python file beside it, `weights/`, and any package you import.
-Add the rest with `--include`. It then plays two smoke games out of the zip it just built, so a
-file you never packaged fails here instead of on the platform.
+Add the rest with `--include`. It only builds the zip; use `make play`, `make arena`, or
+`make live` for game testing before uploading.
 
 Local games start from one of the eight openings unless you pass `--fen`. Rated games draw from
 the full set, which is not published. Treat the eight as a sample, not preparation.
 
-The platform decides acceptance and its validation log is the authority. The smoke games are
-here so a broken zip costs a minute, not one of your ten daily uploads.
+The platform decides acceptance and its validation log is the authority. Local game testing is
+here so you can measure behavior before spending one of your ten daily uploads.
 
 ## The rules
 

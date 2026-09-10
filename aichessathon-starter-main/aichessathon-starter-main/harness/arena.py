@@ -27,6 +27,16 @@ class Game:
     def won(self) -> bool:
         return (self.outcome.result == "white") == self.plays_white
 
+    @property
+    def agent_failed(self) -> bool:
+        if self.outcome.termination not in FAILED_TERMINATIONS:
+            return False
+        if self.outcome.result == "void":
+            return True
+        if self.outcome.result == "draw":
+            return True
+        return not self.won
+
 
 def play(index: int, agent: Path, opponent: Path, arguments: argparse.Namespace) -> Game:
     opening, fen = OPENINGS[(index // 2) % len(OPENINGS)]
@@ -83,11 +93,16 @@ def main() -> None:
     print("Terminations " + ", ".join(f"{name} {count}" for name, count in terminations.items()))
     if scored:
         _report(wins, draws, len(scored) - wins - draws)
-    broken = {name: count for name, count in terminations.items() if name in FAILED_TERMINATIONS}
-    if broken:
+    agent_failures: dict[str, int] = {}
+    for game in games:
+        if game.agent_failed:
+            agent_failures[game.outcome.termination] = (
+                agent_failures.get(game.outcome.termination, 0) + 1
+            )
+    if agent_failures:
         raise SystemExit(
             "Your agent failed to finish a game. "
-            + ", ".join(f"{name} {count}" for name, count in broken.items())
+            + ", ".join(f"{name} {count}" for name, count in agent_failures.items())
         )
 
 

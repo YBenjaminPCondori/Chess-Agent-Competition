@@ -83,13 +83,14 @@ and they change, so fetch them before you rely on a number.
 ```
 make play      # one game against a baseline, real time control
 make arena     # 16 fast games against a baseline, with a score and an interval
-make zip       # build submission.zip, then smoke it the way the platform does
-make gate      # ruff, mypy, and two games that have to finish cleanly
+make live      # alias for make arena
+make zip       # build submission.zip
+make gate      # ruff, mypy, and an arena run that has to finish cleanly
 ```
 
-`make zip` extracts what it built and plays out of it, so a module you never packaged fails there
-instead of costing an upload. Nothing here decides acceptance. The platform validates on upload
-and writes the log that is the authority.
+`make zip` builds the archive but does not run games. Use `make play`, `make arena`, or
+`make live` for game testing before upload. Nothing here decides acceptance. The platform
+validates on upload and writes the log that is the authority.
 
 Local python is pinned to 3.12 to match the image. Everything else the container enforces, the
 read-only filesystem, the 2 GB cap and the missing network, is not reproduced here.

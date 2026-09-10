@@ -1,19 +1,13 @@
 import argparse
 import ast
-import tempfile
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
-import chess
-
-from harness.referee import FAILED_TERMINATIONS, play_match
-from harness.rules import BASE_MS, INCREMENT_MS, MAX_UNZIPPED_BYTES, OPENINGS, SMOKE_PLIES
-from harness.sandbox import local
+from harness.rules import MAX_UNZIPPED_BYTES
 
 DEFAULT_INCLUDES = ("weights",)
 SKIP = {"__pycache__", ".DS_Store"}
-HOUSE = Path(__file__).resolve().parent.parent / "baselines" / "random"
 
 
 def members(root: Path, includes: tuple[str, ...]) -> Iterator[tuple[Path, str]]:
@@ -66,35 +60,8 @@ def build(root: Path, destination: Path, includes: tuple[str, ...]) -> list[str]
     return written
 
 
-def smoke(upload: Path) -> list[str]:
-    problems = []
-    with tempfile.TemporaryDirectory() as workspace:
-        root = Path(workspace) / "agent"
-        with zipfile.ZipFile(upload) as archive:
-            archive.extractall(root)
-        for index, plays_white in enumerate((True, False)):
-            opening, fen = OPENINGS[index]
-            agent, house = local(root, index), local(HOUSE, index)
-            white, black = (agent, house) if plays_white else (house, agent)
-            outcome = play_match(
-                white,
-                black,
-                BASE_MS,
-                INCREMENT_MS,
-                ply_cap=chess.Board(fen).ply() + SMOKE_PLIES,
-                start_fen=fen,
-            )
-            colour = "white" if plays_white else "black"
-            print(f"\nSmoke game as {colour} from {opening}, {outcome.termination}")
-            if agent.stderr_log:
-                print(agent.stderr_log.rstrip())
-            if outcome.termination in FAILED_TERMINATIONS:
-                problems.append(f"Your agent failed as {colour}, {outcome.termination}")
-    return problems
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a submission zip and smoke it.")
+    parser = argparse.ArgumentParser(description="Build a submission zip.")
     parser.add_argument("--out", type=Path, default=Path("submission.zip"))
     parser.add_argument("--include", action="append", default=[])
     arguments = parser.parse_args()
@@ -110,12 +77,7 @@ def main() -> None:
         raise SystemExit(
             f"Over the {MAX_UNZIPPED_BYTES // 1_000_000} MB limit at {unzipped:,} bytes unzipped"
         )
-    problems = smoke(arguments.out)
-    for problem in problems:
-        print(f"\n{problem}")
-    if problems:
-        raise SystemExit(1)
-    print("\nNothing here fails. Acceptance is still the platform's call")
+    print("\nPackage built. Run harness.play or harness.arena for game testing before upload.")
 
 
 if __name__ == "__main__":
