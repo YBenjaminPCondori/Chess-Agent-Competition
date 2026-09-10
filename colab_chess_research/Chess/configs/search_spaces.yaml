@@ -1,0 +1,30 @@
+model_trials: 20
+self_play_search_trials: 10
+model:
+  residual_blocks: [4, 6, 8, 10]
+  channels: [64, 96, 128, 192]
+  value_head_hidden: [128, 256, 512]
+  activation: [relu, gelu, silu]
+  use_batch_norm: [true, false]
+  dropout: [0.0, 0.05, 0.1]
+training:
+  learning_rate: {low: 0.0001, high: 0.001, log: true}
+  weight_decay: {low: 0.00001, high: 0.0003, log: true}
+  batch_size_cuda: [512, 1024, 2048]
+  max_epochs: [10, 20, 30]
+  policy_label_smoothing: [0.0, 0.02, 0.05]
+  scheduler: [cosine, onecycle]
+self_play:
+  games_per_iteration: [128, 256, 512, 1024]
+  temperature_early: [0.75, 1.0, 1.25]
+  temperature_late: [0.0, 0.05, 0.1, 0.25]
+  temperature_cutoff_episode_ply: [8, 12, 16, 20]
+search:
+  value_eval_mix: [0.0, 0.25, 0.5, 0.75, 1.0]
+  max_depth: [3, 4, 5, 6]
+  quiescence_depth: [2, 4, 6]
+  time_budget_fraction: [0.02, 0.04, 0.05, 0.06]
+  transposition_table_size: [50000, 100000, 200000]
+  policy_top_k_root: [all]
+  policy_top_k_internal: [all]
+value_weight: [0.5, 1.0, 2.0]

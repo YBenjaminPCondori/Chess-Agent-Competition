@@ -1,0 +1,3 @@
+self_play:
+  iterations: 10
+  games_per_iteration: 512

@@ -1,0 +1,40 @@
+{
+  "inspected_at": "2026-09-10",
+  "files": {
+    "reference/classical_agent/agent.py": "041efff95dbcebbe1dd7dbad90ca8000846df030f2f85903ce1042912f99f6ea",
+    "reference/starter/agent.py": "041efff95dbcebbe1dd7dbad90ca8000846df030f2f85903ce1042912f99f6ea",
+    "reference/starter/AGENTS.md": "319b8570729e6a39bc8c295ba1c1b929b4509ea933cf5427f6c7028cb97c0a72",
+    "reference/starter/IDEAS.md": "6a7f1af756e74ac5000be677e288fdba0b8f62e3872ed970156afdb33e427eeb",
+    "reference/starter/Makefile": "0b7a3f91abb2326ae3156f058a32603b2cf55eabea1a0dd9c8becb619c0430f1",
+    "reference/starter/README.md": "e96ddadd605f2ad22ccc3707fd8ff7dda1a8ca14e3dbc47154c20846b897e531",
+    "reference/starter/harness/arena.py": "b6cdc2d84ca108fe269c504526493179059b70c3da9d0287cb1dc56d41d00ffc",
+    "reference/starter/harness/package.py": "fa33cacd99137e3a0a4d10423dd7d02cf2d84a5065ed440d4b8d1c6f5842f9ff",
+    "reference/starter/harness/play.py": "cd4c1b790ad441823d3aeeea84d770e530d338c0a1a003ec9bdbfde6e2b74cce",
+    "reference/starter/harness/referee.py": "5562edc242e687690b2d87f0d97ad2130f7878d08802079772c0c2e72ce9077e",
+    "reference/starter/harness/rules.py": "61b131dbd6d91153f23e526973f1196be6e295db32bfcbb0202d70b93187c6fc",
+    "reference/starter/harness/runner.py": "b4111158d923f29ea12cc69014df70e6446b02a31695d8e6e89a81320805b4f2",
+    "reference/starter/harness/sandbox.py": "18822289afd3bc7be06f61e97f22aad865e104061044946a261a2a5402ef90bd",
+    "reference/starter/harness/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reference/starter/baselines/greedy/agent.py": "89946b425735435742c95c0d3b832fa4b36f3798238c65ffa0ff846092a4280f",
+    "reference/starter/baselines/minimax/agent.py": "aecc88f4fb972338c30d3a0e468122b2c7bf5191e140078a40b09679588235e0",
+    "reference/starter/baselines/numba/agent.py": "ee959b63652b67c22fb7d4d47ecbea46e5e496ecb4a07592c6619dd83c31f2e6",
+    "reference/starter/baselines/random/agent.py": "9c09c0fe01293a5090887e84d38881c6801fcfba6ab72ce0a36df15cf33f66f3"
+  },
+  "source_urls": [
+    "https://aichessathon.com/docs",
+    "https://github.com/advitrocks9/aichessathon-starter"
+  ],
+  "runtime_versions": {
+    "python": "3.12",
+    "torch": "2.13.0+cpu",
+    "numpy": "2.5.2",
+    "chess": "1.11.2",
+    "onnxruntime": "1.29.0",
+    "numba": "0.67.0"
+  },
+  "notebook_references": [
+    "Part_C_PPO_Environment.ipynb",
+    "Part_C_PPO_Training.ipynb"
+  ],
+  "workspace_commit": "78243bf969e24894fd4963583662a264aaad994f"
+}

@@ -1,0 +1,10 @@
+{
+  "development": 128,
+  "hashes": {
+    "development.jsonl": "4533ed00945c1f2678aa97f420841a176606f1f10382105066bb7299550c5b09",
+    "heldout.jsonl": "53dc7c79a83f4c9bac314e2f150e615b1dce1ae6469c4028c357921cc40f7750"
+  },
+  "heldout": 256,
+  "quality": "Valid legal playouts; not certified balanced or platform openings.",
+  "seed": 42
+}

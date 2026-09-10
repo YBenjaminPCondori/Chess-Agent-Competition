@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.tmp
+*.pt
+*.onnx
+checkpoints/**
+exports/**
+submission_candidate/**
+logs/**
+results/**
+datasets/raw/**
+datasets/processed/**

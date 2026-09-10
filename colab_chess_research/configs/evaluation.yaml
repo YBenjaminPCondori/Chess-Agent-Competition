@@ -1,0 +1,3 @@
+evaluation:
+  development_games: 256
+  heldout_games: 512

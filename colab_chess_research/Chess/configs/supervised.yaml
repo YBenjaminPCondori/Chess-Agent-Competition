@@ -1,0 +1,3 @@
+# Overrides merge recursively with default.yaml.
+training:
+  max_epochs: 20

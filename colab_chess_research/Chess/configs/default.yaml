@@ -1,0 +1,74 @@
+seed: 42
+run_id: chess_v1
+deterministic: false
+device: auto
+model:
+  residual_blocks: 6
+  channels: 128
+  value_head_hidden: 256
+  activation: relu
+  use_batch_norm: true
+  dropout: 0.0
+training:
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  max_epochs: 20
+  early_stopping_patience: 4
+  early_stopping_min_delta: 0.0001
+  batch_size_cuda: 512
+  batch_size_cpu: 64
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  minimum_learning_rate: 0.000003
+  policy_label_smoothing: 0.0
+  value_weight: 1.0
+  huber_delta: 1.0
+  num_workers: 2
+dataset:
+  target_positions: 100000
+  pgn_paths: []
+  jsonl_paths: []
+  teacher: stockfish
+  engine_path: /usr/games/stockfish
+  nodes: 50000
+  hash_mb: 128
+  burn_in_plies: 12
+search:
+  max_depth: 6
+  quiescence_depth: 4
+  value_eval_mix: 0.5
+  policy_ordering: true
+  time_budget_fraction: 0.05
+  max_budget_ms: 1000.0
+  transposition_table_size: 100000
+  policy_top_k_root: all
+  policy_top_k_internal: all
+self_play:
+  iterations: 10
+  games_per_iteration: 512
+  teacher_max_depth: 3
+  teacher_target_temperature: 0.25
+  temperature_early: 1.0
+  temperature_late: 0.1
+  temperature_cutoff_episode_ply: 16
+  epsilon_exploration_early: 0.05
+  epsilon_exploration_late: 0.0
+  replay_capacity_positions: 500000
+  gradient_updates_per_iteration: 2000
+  checkpoint_every_updates: 250
+  learning_rate: 0.0001
+  supervised_replay_fraction: 0.25
+  clock_mode: competition
+evaluation:
+  base_ms: 120000
+  increment_ms: 500
+  development_games: 256
+  heldout_games: 512
+  promotion_threshold: 0.55
+  bootstrap_samples: 10000
+  target_inference_p95_ms: 5.0
+export:
+  format: pytorch_state_dict
+  quantization: none
+  onnx_opset: 17

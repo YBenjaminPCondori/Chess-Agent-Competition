@@ -1,0 +1,32 @@
+run_id: no_rl_classical_v1
+device: auto
+non_rl:
+  # classical: no neural training. supervised: run optional notebook 02 first.
+  variant: classical
+  final_games: 16
+  # Pure-classical coefficient optimization, not reinforcement learning.
+  tuning:
+    enabled: true
+    trials: 8
+    games_per_trial: 32
+    confirmation_games: 128
+    minimum_confirmation_score: 0.55
+    ranges:
+      piece_square: [0.5, 1.5]
+      activity: [0.0, 6.0]
+      bishop_pair: [15.0, 60.0]
+      doubled_pawns: [-30.0, -5.0]
+      isolated_pawns: [-25.0, 0.0]
+      passed_pawns: [5.0, 40.0]
+      passed_pawn_advance: [3.0, 16.0]
+search:
+  # Baseline coefficients. Negative values are penalties. Material scale stays fixed when tuning.
+  evaluation_weights:
+    material: 1.0
+    piece_square: 1.0
+    activity: 2.0
+    bishop_pair: 35.0
+    doubled_pawns: -12.0
+    isolated_pawns: -10.0
+    passed_pawns: 20.0
+    passed_pawn_advance: 8.0
