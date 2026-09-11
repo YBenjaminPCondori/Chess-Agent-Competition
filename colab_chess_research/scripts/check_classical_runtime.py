@@ -22,6 +22,9 @@ def main():
     socket.socket = deny_network
     sys.path.insert(0, str(args.candidate.resolve()))
     import agent
+    import inspect
+
+    assert str(inspect.signature(agent.get_move)) == "(fen: str, time_left_ms: int) -> str"
 
     init_ms = (time.monotonic() - started) * 1000
     assert "torch" not in sys.modules and agent.ENGINE.neural is None

@@ -6,7 +6,7 @@ from nbclient import NotebookClient
 from nbconvert import HTMLExporter
 
 ROOT = Path(__file__).resolve().parents[1]
-source = ROOT / "notebooks/01_chess_environment_and_encoding.ipynb"
+source = ROOT / "notebooks/01_environment_and_encoding.ipynb"
 notebook = nbformat.read(source, as_version=4)
 notebook.cells[0].source += (
     "\n\nLOCAL VALIDATION COPY: Drive mount and pip setup were replaced. "

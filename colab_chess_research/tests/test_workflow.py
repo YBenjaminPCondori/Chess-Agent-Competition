@@ -10,7 +10,7 @@ from chess_rl.training import fit_supervised
 from chess_rl.checkpoints import save_checkpoint, load_checkpoint
 from chess_rl.model import ChessPolicyValueNetSmall
 from chess_rl.reproducibility import sha256
-from chess_rl.self_play import import_baseline, collect_game
+from chess_rl.self_play import collect_game
 from chess_rl.league import League
 from chess_rl.evaluation import harness_modules
 from chess_rl.search import SearchEngine
@@ -46,12 +46,6 @@ def test_one_epoch_and_resume(tmp_path):
     changed["training"]["learning_rate"] = 0.01
     with pytest.raises(ValueError):
         fit_supervised(tmp_path, changed, manifest)
-
-
-def test_original_classical_import():
-    get_move = import_baseline(ROOT / "reference/classical_agent/agent.py", 42)
-    move = get_move(chess.STARTING_FEN, 1)
-    assert chess.Move.from_uci(move) in chess.Board().legal_moves
 
 
 def test_collector_finishes_fixture_game(tmp_path, monkeypatch):
@@ -115,13 +109,25 @@ def test_jsonl_dataset_preparation_and_resume(tmp_path):
                     dict(best_move_uci=move.uci(), value_target=0.0, value_target_kind="fixture"),
                 )
             )
-    path = tmp_path / "import.jsonl"
+    path = tmp_path / "datasets/raw/external/import.jsonl"
     write_jsonl(path, records)
-    cfg["dataset"].update(jsonl_paths=[str(path)], target_positions=len(records))
+    cfg["dataset"].update(
+        jsonl_paths=["datasets/raw/external/import.jsonl"], target_positions=len(records)
+    )
     prepare_openings(tmp_path)
     manifest = prepare_dataset(tmp_path, cfg)
     assert all(count > 0 for count in manifest["counts"].values())
     assert prepare_dataset(tmp_path, cfg) == manifest
+
+
+def test_broad_dataset_requires_external_sources(tmp_path):
+    from chess_rl.dataset import prepare_dataset
+
+    cfg = load_config(ROOT)
+    cfg["run_id"] = "missing-broad-source"
+    cfg["dataset"].update(jsonl_paths=[], pgn_paths=[])
+    with pytest.raises(ValueError, match="Broad training requires external data"):
+        prepare_dataset(tmp_path, cfg)
 
 
 def test_real_harness_process_adapter(tmp_path, monkeypatch):

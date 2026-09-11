@@ -171,7 +171,7 @@ else:
         (
             "Build or Resume the Dataset",
             "Provide PGNs or JSONL through a `dataset` override in `configs/no_rl.yaml`. "
-            "Otherwise the workflow generates and labels legal-playout positions, requesting 100,000 unique examples. "
+            "Empty broad sources now stop with a clear error instead of generating synthetic training positions. "
             "This is not a curated strategy curriculum. Source-game splits and held-out exclusion use the shared dataset implementation.",
             """if TRAIN_SUPERVISED:
     from chess_rl.dataset import prepare_dataset, prepare_openings

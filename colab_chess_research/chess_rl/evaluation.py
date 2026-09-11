@@ -127,6 +127,13 @@ def summarize(rows, samples=10000, seed=42):
         )
     metrics["fallback_moves"] = sum(r["telemetry"].get("fallback_moves", 0) for r in rows)
     metrics["model_errors"] = sum(r["telemetry"].get("model_errors", 0) for r in rows)
+    metrics["search_errors"] = sum(r["telemetry"].get("search_errors", 0) for r in rows)
+    metrics["opponent_failures"] = sum(bool(r.get("opponent_failure")) for r in rows)
+    metrics["opponent_errors"] = sum(
+        r.get("opponent_telemetry", {}).get(key, 0)
+        for r in rows
+        for key in ("model_errors", "search_errors")
+    )
     metrics["nodes"] = sum(r["telemetry"].get("nodes", 0) for r in rows)
     metrics["inference_calls"] = sum(r["telemetry"].get("inference_calls", 0) for r in rows)
     metrics["inference_ms"] = sum(r["telemetry"].get("inference_ms", 0) for r in rows)
@@ -190,15 +197,20 @@ def run_matchup(root, candidate, opponent, openings, cfg, name, games=None):
             else float(outcome.result == ("white" if candidate_white else "black"))
         )
         failure = first.failure
+        opponent_failure = second.failure
         if outcome.termination in {"illegal", "crash", "flag", "init"}:
             if score == 0:
                 failure = outcome.termination
+            elif score == 1:
+                opponent_failure = outcome.termination
             elif (
                 outcome.termination == "flag"
                 and score == 0.5
                 and first.last_move_started > second.last_move_started
             ):
                 failure = "flag"
+            elif outcome.termination == "flag" and score == 0.5:
+                opponent_failure = "flag"
         row = dict(
             game_index=game_index,
             opening_id=opening["opening_id"],
@@ -208,10 +220,12 @@ def run_matchup(root, candidate, opponent, openings, cfg, name, games=None):
             result=outcome.result,
             termination=outcome.termination,
             candidate_failure=failure,
+            opponent_failure=opponent_failure,
             init_ms=first.init_ms,
             move_times_ms=first.times,
             clocks_before_ms=first.clocks,
             telemetry=telemetry(first.stderr_log),
+            opponent_telemetry=telemetry(second.stderr_log),
         )
         (directory / f"game-{game_index:04d}.pgn").write_text(outcome.pgn + "\n")
         (directory / f"game-{game_index:04d}-candidate.log").write_text(first.stderr_log)

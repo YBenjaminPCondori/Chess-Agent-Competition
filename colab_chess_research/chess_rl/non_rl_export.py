@@ -14,9 +14,9 @@ from .non_rl import CLASSICAL_FILES, selected_no_rl
 from .reproducibility import atomic_json, read_json, sha256
 
 
-def final_no_rl_checks(root, run_id):
+def final_no_rl_checks(root, run_id, *, selection=None):
     root = Path(root).resolve()
-    selection = selected_no_rl(root, run_id)
+    selection = selected_no_rl(root, run_id) if selection is None else selection
     variant, cfg = selection["variant"], selection["config"]
     directory = root / "exports/no_rl" / run_id / variant
     candidate = directory / "candidate"
@@ -157,6 +157,8 @@ def final_no_rl_checks(root, run_id):
                         backup.rename(weight)
                     report["checks"]["missing_model_fallback"] = "pass"
                 report["checks"]["fresh_process_legal_moves"] = "pass"
+                for name in ("get_move_api", "low_clock_timing", "cpu_only_inference"):
+                    report["checks"][name] = "pass"
         games = run_matchup(
             root,
             candidate,

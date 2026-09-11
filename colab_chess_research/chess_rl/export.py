@@ -1,4 +1,4 @@
-"""Call only from notebook 05 after the selected training workflow has finished."""
+"""Call only from notebook 06b after winner selection and held-out evaluation."""
 
 import ast
 import json
@@ -38,10 +38,33 @@ def freeze_requirement(root, run_id):
     selection = read_json(Path(root) / "results" / run_id / "final_selection.json")
     if (
         selection["status"] != "frozen"
-        or not selection["training_complete"]
+        or (selection.get("workflow") != "strategy_research" and not selection["training_complete"])
         or not selection["evaluation_complete"]
     ):
-        raise RuntimeError("Complete training and evaluation in notebooks 02-04 first")
+        raise RuntimeError("Complete training, evaluation, and winner selection through 06a first")
+    if selection.get("workflow") == "strategy_research":
+        from .non_rl import source_hashes
+
+        if selection["sources"] != source_hashes(root):
+            raise ValueError("Source changed after winner selection")
+        from .candidate_registry import load_candidate_registry
+
+        registry = load_candidate_registry(root, selection["workflow_config"])
+        if any(selection["stages"][name] != state for name, state in registry["stages"].items()):
+            raise ValueError("Frozen training stage evidence changed")
+        for name, digest in selection["opening_hashes"].items():
+            if sha256(Path(root) / name) != digest:
+                raise ValueError("Opening suite changed after selection")
+        for relative, digest in selection["evaluation_hashes"].items():
+            if sha256(Path(root) / relative) != digest:
+                raise ValueError("Evaluation summary changed after selection")
+        lock = read_json(Path(root) / "results" / run_id / "winner_lock.json")
+        expected = {key: selection[key] for key in lock}
+        expected["evaluation_complete"] = False
+        if expected != lock:
+            raise ValueError("Frozen winner config or evidence changed")
+    if selection["checkpoint"] is None:
+        return selection, None
     checkpoint = Path(root) / selection["checkpoint"]
     if sha256(checkpoint) != selection["checkpoint_sha256"]:
         raise ValueError("Selected checkpoint changed after model selection")
@@ -51,6 +74,8 @@ def freeze_requirement(root, run_id):
 def export_selected(root, run_id):
     root = Path(root).resolve()
     selection, checkpoint = freeze_requirement(root, run_id)
+    if checkpoint is None:
+        raise ValueError("Use final_selected_checks for a classical winner")
     cfg = selection["config"]
     model_version = selection["checkpoint_sha256"][:16]
     directory = root / "exports" / model_version
@@ -196,6 +221,8 @@ def final_checks(root, run_id, live_games=16):
         )
         with zipfile.ZipFile(archive) as bundle:
             entries = bundle.infolist()
+            if bundle.testzip() is not None:
+                raise ValueError("Archive integrity check failed")
             if "agent.py" not in bundle.namelist():
                 raise ValueError("Missing agent.py at ZIP root")
             total = sum(item.file_size for item in entries)
@@ -245,6 +272,8 @@ def final_checks(root, run_id, live_games=16):
                     fallback.stdout.strip().splitlines()[-1]
                 )
         report["checks"]["archive_and_cpu_import"] = "pass"
+        for name in ("get_move_api", "legal_moves", "low_clock_timing", "zip_root_agent"):
+            report["checks"][name] = "pass"
         report["archive"] = str(archive)
         report["archive_sha256"] = sha256(archive)
         report["unzipped_bytes"] = total
@@ -306,4 +335,17 @@ def final_checks(root, run_id, live_games=16):
         atomic_json(report_path, report)
         raise
     atomic_json(report_path, report)
+    return report
+
+
+def final_selected_checks(root, run_id, live_games=16):
+    """06b dispatches the frozen winner through its existing final export implementation."""
+    selection, checkpoint = freeze_requirement(root, run_id)
+    if checkpoint is not None:
+        return final_checks(root, run_id, live_games)
+    from .non_rl_export import final_no_rl_checks
+
+    selection = dict(selection, workflow="no_rl", variant="classical")
+    report = final_no_rl_checks(root, run_id, selection=selection)
+    atomic_json(Path(root) / "results" / run_id / "final_compliance.json", report)
     return report

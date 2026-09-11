@@ -21,8 +21,8 @@ CLASSICAL_FILES = (
 )
 
 
-def load_no_rl_config(root):
-    cfg = load_config(root, "no_rl.yaml")
+def load_no_rl_config(root, override="no_rl.yaml"):
+    cfg = load_config(root, override)
     cfg.pop("self_play", None)
     if not cfg["run_id"].startswith("no_rl_"):
         raise ValueError("Use a separate run_id starting with no_rl_")

@@ -61,7 +61,7 @@ def collect_game(root, cfg, league, iteration, game_index, forbidden):
     settings = cfg["self_play"]
     seed = cfg["seed"] + iteration * 100000 + game_index
     rng = random.Random(seed)
-    device = resolve_device(cfg["device"])
+    device = resolve_device(cfg["self_play"].get("generation_device", "cpu"))
     (kind, opponent_path, _), mixture = league.opponent(seed)
     learner_white = game_index % 2 == 0
     champion_hash = sha256(league.champion)
@@ -206,6 +206,9 @@ def train_iteration(
         path = directory / reference["path"]
         if sha256(path) != reference["sha256"]:
             raise ValueError("Candidate checkpoint modified")
+        payload = load_checkpoint(path)
+        if payload["config"] != cfg or payload["replay_manifest"] != replay_manifest:
+            raise ValueError("Completed candidate replay/config changed")
         return path
     device = resolve_device(cfg["device"])
     model, _ = load_model(champion, device)
@@ -256,6 +259,9 @@ def train_iteration(
                 microbatch_size=loop.microbatch,
                 replay_manifest=replay_manifest,
                 league_state=dict(champion=str(champion)),
+                parent=dict(
+                    checkpoint=str(Path(champion).relative_to(root)), sha256=sha256(champion)
+                ),
                 dataset_hashes=replay_manifest["supervised_hashes"],
                 sampler="python_rng_replacement",
             )
@@ -264,19 +270,13 @@ def train_iteration(
     return path
 
 
-def run_league(root, cfg, initial_checkpoint, dataset_manifest):
-    root = Path(root)
-    league = League(root, cfg, initial_checkpoint)
-    if league.state["completed_iterations"] >= cfg["self_play"]["iterations"]:
-        atomic_json(
-            league.path.parent / "complete.json",
-            dict(
-                status="complete",
-                champion=league.state["champion"],
-                iterations=league.state["completed_iterations"],
-            ),
-        )
-        return league.champion
+def _league_inputs(root, cfg, dataset_manifest):
+    from .reservations import enabled, audit_dataset
+
+    reservation = audit_dataset(root, cfg, dataset_manifest) if enabled(cfg) else None
+    for split, path in dataset_manifest["paths"].items():
+        if sha256(root / path) != dataset_manifest["hashes"][split]:
+            raise ValueError("Supervised data changed before self-play")
     forbidden = {
         identity(row["fen"])
         for split in ("val", "test")
@@ -287,61 +287,190 @@ def run_league(root, cfg, initial_checkpoint, dataset_manifest):
         for suite in ("development", "heldout")
         for row in read_jsonl(root / f"datasets/openings/{suite}.jsonl")
     )
-    supervised = list(read_jsonl(root / dataset_manifest["paths"]["train"]))
-    for iteration in range(
-        league.state["completed_iterations"] + 1, cfg["self_play"]["iterations"] + 1
-    ):
-        collection = root / "results" / cfg["run_id"] / "self_play" / f"iteration-{iteration:03d}"
-        collection.mkdir(parents=True, exist_ok=True)
-        for game_index in range(cfg["self_play"]["games_per_iteration"]):
-            path = collection / f"game-{game_index:05d}.json"
-            if path.exists():
-                continue
-            game = collect_game(root, cfg, league, iteration, game_index, forbidden)
-            atomic_json(path, game)
-            print(
-                f"Self-play {iteration}: game {game_index + 1}/{cfg['self_play']['games_per_iteration']}, "
-                f"{game['result']} ({game['termination']})",
-                flush=True,
+    if reservation:
+        forbidden.update(reservation["reserved_positions"])
+    from .strategy_dataset import load_strategy_manifest
+
+    manifests = sorted(
+        set(
+            cfg.get("strategy_evaluation", {}).get("manifests", [])
+            + cfg.get("strategy_finetuning", {}).get("manifests", [])
+        )
+    )
+    default = (
+        root
+        / "data/strategy"
+        / cfg.get("strategy_dataset", {}).get("dataset_id", cfg["run_id"])
+        / "manifest.json"
+    )
+    if default.exists():
+        manifests = sorted(set(manifests + [str(default)]))
+    for path in manifests:
+        strategy = load_strategy_manifest(root, path)
+        for split in ("validation", "test"):
+            forbidden.update(
+                identity(row["fen"]) for row in read_jsonl(root / strategy["paths"][split])
             )
-        replay, files = [], {}
-        for path in sorted(
-            (root / "results" / cfg["run_id"] / "self_play").glob("iteration-*/game-*.json")
+    return forbidden
+
+
+def _validate_collection_game(game, index):
+    if (
+        game.get("game_index") != index
+        or game.get("result") not in ("1-0", "0-1", "1/2-1/2", "*")
+        or not game.get("termination")
+        or not isinstance(game.get("records"), list)
+    ):
+        raise ValueError("Incomplete self-play game; collection cannot be marked complete")
+    if game["termination"] in FAILURES and game["records"]:
+        raise ValueError("Failed self-play games cannot supply training records")
+
+
+def generate_self_play(root, cfg, initial_checkpoint, dataset_manifest):
+    """Stage 04a: collect exactly the next iteration with a frozen league champion."""
+    root = Path(root)
+    league = League(root, cfg, initial_checkpoint)
+    if league.state["completed_iterations"] >= cfg["self_play"]["iterations"]:
+        return dict(status="complete", iterations=league.state["completed_iterations"])
+    forbidden = _league_inputs(root, cfg, dataset_manifest)
+    iteration = league.state["completed_iterations"] + 1
+    collection = root / "results" / cfg["run_id"] / "self_play" / f"iteration-{iteration:03d}"
+    signature = dict(
+        config=cfg,
+        champion_sha256=sha256(league.champion),
+        dataset_hashes=dataset_manifest["hashes"],
+        reserved=sorted(forbidden),
+    )
+    lock = collection / "collection_inputs.json"
+    if lock.exists() and read_json(lock) != signature:
+        raise ValueError("Frozen collector inputs changed; start a new run")
+    atomic_json(lock, signature)
+    if (collection / "generation.json").exists():
+        report = read_json(collection / "generation.json")
+        if (
+            report.get("status") != "completed"
+            or len(report["files"]) != cfg["self_play"]["games_per_iteration"]
+            or report["signature"] != signature
+            or any(sha256(root / p) != digest for p, digest in report["files"].items())
         ):
+            raise ValueError("Completed generation changed")
+        return report
+    for game_index in range(cfg["self_play"]["games_per_iteration"]):
+        path = collection / f"game-{game_index:05d}.json"
+        if path.exists():
+            _validate_collection_game(read_json(path), game_index)
+            continue
+        game = collect_game(root, cfg, league, iteration, game_index, forbidden)
+        _validate_collection_game(game, game_index)
+        atomic_json(path, game)
+        print(
+            f"Self-play {iteration}: game {game_index + 1}/{cfg['self_play']['games_per_iteration']}",
+            flush=True,
+        )
+    report = dict(
+        status="completed",
+        iteration=iteration,
+        signature=signature,
+        files={str(p.relative_to(root)): sha256(p) for p in sorted(collection.glob("game-*.json"))},
+    )
+    if len(report["files"]) != cfg["self_play"]["games_per_iteration"]:
+        raise ValueError("Unexpected collection files; cannot mark generation complete")
+    atomic_json(collection / "generation.json", report)
+    return report
+
+
+def train_and_promote(root, cfg, initial_checkpoint, dataset_manifest):
+    """Stage 04b: consume completed generation, optimize, and play CPU promotion games."""
+    root = Path(root)
+    league = League(root, cfg, initial_checkpoint)
+    if league.state["completed_iterations"] >= cfg["self_play"]["iterations"]:
+        return league.champion
+    forbidden = _league_inputs(root, cfg, dataset_manifest)
+    iteration = league.state["completed_iterations"] + 1
+    collection = root / "results" / cfg["run_id"] / "self_play" / f"iteration-{iteration:03d}"
+    report = read_json(collection / "generation.json")
+    signature = dict(
+        config=cfg,
+        champion_sha256=sha256(league.champion),
+        dataset_hashes=dataset_manifest["hashes"],
+        reserved=sorted(forbidden),
+    )
+    if (
+        report.get("status") != "completed"
+        or report["iteration"] != iteration
+        or report["signature"] != signature
+        or len(report["files"]) != cfg["self_play"]["games_per_iteration"]
+    ):
+        raise ValueError("Complete stage 04a with these collector inputs first")
+    if any(sha256(root / p) != digest for p, digest in report["files"].items()):
+        raise ValueError("Completed self-play games changed")
+    supervised = list(read_jsonl(root / dataset_manifest["paths"]["train"]))
+    if any(identity(row["fen"]) in forbidden for row in supervised):
+        raise ValueError("Broad replay overlaps an evaluation reservation")
+    replay, files = [], {}
+    for number in range(1, iteration + 1):
+        prior = read_json(collection.parent / f"iteration-{number:03d}" / "generation.json")
+        for relative, digest in sorted(prior["files"].items()):
+            path = root / relative
+            if sha256(path) != digest:
+                raise ValueError("Replay source changed")
             game = read_json(path)
-            replay.extend(game["records"])
-            files[str(path.relative_to(root))] = sha256(path)
+            replay.extend(row for row in game["records"] if identity(row["fen"]) not in forbidden)
+            files[relative] = digest
             capacity = cfg["self_play"]["replay_capacity_positions"]
             if len(replay) > capacity:
                 replay = replay[-capacity:]
-        replay_manifest = dict(
-            files=files,
-            capacity=cfg["self_play"]["replay_capacity_positions"],
-            positions=len(replay),
-            supervised_hashes=dataset_manifest["hashes"],
-        )
-        candidate = train_iteration(
-            root, cfg, league.champion, replay, supervised, iteration, replay_manifest
-        )
-        candidate_agent = build_research_agent(root, candidate, cfg, f"iteration-{iteration}")
-        champion_agent = build_research_agent(root, league.champion, cfg, "champion")
-        summary = run_matchup(
-            root,
-            candidate_agent,
-            champion_agent,
-            root / "datasets/openings/development.jsonl",
-            cfg,
-            f"promotion-{iteration:03d}",
-            cfg["evaluation"]["development_games"],
-        )
-        promoted = promotion_allowed(summary, cfg["evaluation"]["promotion_threshold"])
-        league.finish_iteration(iteration, candidate, promoted, summary)
-    atomic_json(
-        league.path.parent / "complete.json",
-        dict(
-            status="complete",
-            champion=league.state["champion"],
-            iterations=league.state["completed_iterations"],
-        ),
+    replay_manifest = dict(
+        forbidden_positions=sorted(forbidden),
+        generation_sha256=sha256(collection / "generation.json"),
+        files=files,
+        capacity=cfg["self_play"]["replay_capacity_positions"],
+        positions=len(replay),
+        supervised_hashes=dataset_manifest["hashes"],
     )
+    from .reservations import enabled, evidence
+
+    replay_manifest["reservations"] = evidence(root, cfg) if enabled(cfg) else None
+    candidate = train_iteration(
+        root, cfg, league.champion, replay, supervised, iteration, replay_manifest
+    )
+    candidate_agent = build_research_agent(root, candidate, cfg, f"iteration-{iteration}")
+    champion_agent = build_research_agent(root, league.champion, cfg, "champion")
+    from .reservations import enabled, load_reservations
+
+    openings = (
+        root / load_reservations(root, cfg)["suites"]["development"]
+        if enabled(cfg)
+        else root / "datasets/openings/development.jsonl"
+    )
+    summary = run_matchup(
+        root,
+        candidate_agent,
+        champion_agent,
+        openings,
+        cfg,
+        f"promotion-{iteration:03d}",
+        cfg["evaluation"]["development_games"],
+    )
+    promoted = promotion_allowed(summary, cfg["evaluation"]["promotion_threshold"])
+    league.finish_iteration(iteration, candidate, promoted, summary)
+    if league.state["completed_iterations"] >= cfg["self_play"]["iterations"]:
+        atomic_json(
+            league.path.parent / "complete.json",
+            dict(
+                status="complete",
+                champion=league.state["champion"],
+                iterations=league.state["completed_iterations"],
+            ),
+        )
+    return league.champion
+
+
+def run_league(root, cfg, initial_checkpoint, dataset_manifest):
+    """Convenience runner; the notebooks expose collection and optimization separately."""
+    league = League(root, cfg, initial_checkpoint)
+    while league.state["completed_iterations"] < cfg["self_play"]["iterations"]:
+        generate_self_play(root, cfg, initial_checkpoint, dataset_manifest)
+        train_and_promote(root, cfg, initial_checkpoint, dataset_manifest)
+        league = League(root, cfg, initial_checkpoint)
     return league.champion

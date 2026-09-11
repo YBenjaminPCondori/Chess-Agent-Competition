@@ -41,6 +41,18 @@ def read_jsonl(path):
                 yield json.loads(line)
 
 
+def resolve_source_paths(root, paths, label):
+    resolved = []
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path(root) / path
+        if not path.is_file():
+            raise FileNotFoundError(f"Broad {label} source not found: {path}")
+        resolved.append(path)
+    return resolved
+
+
 def prepare_openings(root, seed=42, development=128, heldout=256):
     directory = Path(root) / "datasets/openings"
     manifest_path = directory / "manifest.json"
@@ -116,28 +128,6 @@ def split_records(records, seed=42, forbidden=()):
     return splits, dropped
 
 
-def generated_positions(seed=42, burn_in=12):
-    rng = random.Random(seed)
-    game_index = 0
-    while True:
-        board = chess.Board()
-        game_id = f"generated-corpus-{seed}-{game_index}"
-        for ply in range(200):
-            if board.outcome() is not None:
-                break
-            if ply >= burn_in:
-                yield dict(
-                    fen=board.fen(),
-                    game_id=game_id,
-                    opening_id=game_id,
-                    ply=board.ply(),
-                    source_uri_or_path="generated legal playout",
-                    game_result=None,
-                )
-            board.push(rng.choice(sorted(board.legal_moves, key=lambda move: move.uci())))
-        game_index += 1
-
-
 def pgn_positions(paths, burn_in=12):
     for path in paths:
         path = Path(path)
@@ -203,8 +193,16 @@ def make_record(position, label):
 
 def prepare_dataset(root, cfg):
     from .teacher_labelling import Teacher
+    from .reservations import enabled, load_reservations, evidence, audit_dataset, excluded
 
     root = Path(root)
+    reservation = load_reservations(root, cfg) if enabled(cfg) else None
+    if reservation:
+        reservation = dict(
+            reservation,
+            reserved_positions=set(reservation["reserved_positions"]),
+            reserved_groups=set(reservation["reserved_groups"]),
+        )
     prepare_openings(root, cfg["seed"])
     manifest_path = root / "datasets/manifests" / (cfg["run_id"] + ".json")
     if manifest_path.exists():
@@ -214,13 +212,27 @@ def prepare_dataset(root, cfg):
         for split, relative in manifest["paths"].items():
             if sha256(root / relative) != manifest["hashes"][split]:
                 raise ValueError("Processed dataset hash mismatch")
+        if reservation:
+            audit_dataset(root, cfg, manifest)
         return manifest
     forbidden = {
         identity(row["fen"])
         for name in ("development", "heldout")
         for row in read_jsonl(root / f"datasets/openings/{name}.jsonl")
     }
+    if reservation:
+        forbidden.update(reservation["reserved_positions"])
     settings = cfg["dataset"]
+    imported = settings.get("jsonl_paths", [])
+    pgn_paths = settings.get("pgn_paths", [])
+    if not imported and not pgn_paths:
+        raise ValueError(
+            "Broad training requires external data. Put converted Lichess Eval DB JSONL under "
+            "datasets/raw/external/ and list it in configs/default.yaml dataset.jsonl_paths, "
+            "or provide PGNs in dataset.pgn_paths for teacher labelling."
+        )
+    imported = resolve_source_paths(root, imported, "JSONL")
+    pgn_paths = resolve_source_paths(root, pgn_paths, "PGN")
     cache = root / "datasets/raw" / cfg["run_id"]
     cache.mkdir(parents=True, exist_ok=True)
     labelled = {
@@ -234,21 +246,18 @@ def prepare_dataset(root, cfg):
     atomic_json(cache_config, settings)
     shard_number = len(list(cache.glob("labels-*.jsonl")))
     pending = []
-    imported = settings.get("jsonl_paths", [])
     records = []
     seen = set()
     source = (
         (row for p in imported for row in read_jsonl(p))
         if imported
-        else (
-            pgn_positions(settings["pgn_paths"], settings["burn_in_plies"])
-            if settings["pgn_paths"]
-            else generated_positions(cfg["seed"], settings["burn_in_plies"])
-        )
+        else pgn_positions(pgn_paths, settings["burn_in_plies"])
     )
     teacher = None
     try:
         for position in source:
+            if reservation and excluded(position, reservation):
+                continue
             board = chess.Board(position["fen"])
             if not board.is_valid() or board.outcome() is not None:
                 continue
@@ -295,6 +304,8 @@ def prepare_dataset(root, cfg):
         target_reached=len(records) >= settings["target_positions"],
         encoder_versions=["board_v1", "action_v1"],
     )
+    if reservation:
+        manifest["reservations"] = evidence(root, cfg)
     for split, rows in splits.items():
         path = root / "datasets/processed" / cfg["run_id"] / f"{split}.jsonl"
         write_jsonl(path, rows)

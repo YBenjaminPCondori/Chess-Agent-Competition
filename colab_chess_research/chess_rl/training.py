@@ -91,6 +91,7 @@ class OptimizerLoop:
             or settings["batch_size_cuda" if self.use_amp else "batch_size_cpu"]
         )
         self.update = 0
+        self.frozen_modules = []
 
     def autocast(self):
         return torch.autocast("cuda", dtype=self.amp_dtype) if self.use_amp else nullcontext()
@@ -106,6 +107,8 @@ class OptimizerLoop:
             self.optimizer.zero_grad(set_to_none=True)
             totals = [0.0, 0.0]
             self.model.train()
+            for module in self.frozen_modules:
+                module.eval()
             try:
                 for original in batches:
                     for start in range(0, len(original["board"]), self.microbatch):
@@ -260,15 +263,48 @@ def make_loader(dataset, cfg, device, epoch=0, shuffle=False):
     )
 
 
-def fit_supervised(root, cfg, manifest):
+def fit_supervised(
+    root,
+    cfg,
+    manifest,
+    *,
+    initial_checkpoint=None,
+    checkpoint_directory=None,
+    log_name="supervised",
+    freeze_prefixes=(),
+    unfreeze_epoch=None,
+):
+    from .reproducibility import sha256
+    from .checkpoints import load_model
+    from .reservations import enabled, audit_dataset
+
     root = Path(root)
-    directory = root / "checkpoints/supervised" / cfg["run_id"]
+    if enabled(cfg) and initial_checkpoint is None:
+        audit_dataset(root, cfg, manifest)
+    directory = (
+        Path(checkpoint_directory)
+        if checkpoint_directory
+        else root / "checkpoints/supervised" / cfg["run_id"]
+    )
+    transfer = (
+        dict(
+            initial_sha256=sha256(initial_checkpoint),
+            freeze_prefixes=list(freeze_prefixes),
+            unfreeze_epoch=unfreeze_epoch,
+        )
+        if initial_checkpoint
+        else None
+    )
     directory.mkdir(parents=True, exist_ok=True)
     completion = directory / "complete.json"
     if completion.exists():
         selected = checkpoint_path(directory, "best_validation")
         payload = load_checkpoint(selected)
-        if payload["config"] != cfg or payload["dataset_hashes"] != manifest["hashes"]:
+        if (
+            payload["config"] != cfg
+            or payload["dataset_hashes"] != manifest["hashes"]
+            or payload.get("transfer") != transfer
+        ):
             raise ValueError("Completed run has different config/data; choose a new run_id")
         return selected
     seed_all(cfg["seed"], cfg.get("deterministic", False))
@@ -278,13 +314,21 @@ def fit_supervised(root, cfg, manifest):
     val_data = PositionDataset(root / manifest["paths"]["val"])
     loader = make_loader(train_data, cfg, device, shuffle=True)
     steps_per_epoch = math.ceil(len(loader) / training["gradient_accumulation_steps"])
-    model = ChessPolicyValueNetSmall(**cfg["model"])
+    model = (
+        load_model(initial_checkpoint, device)[0]
+        if initial_checkpoint
+        else ChessPolicyValueNetSmall(**cfg["model"])
+    )
     loop = OptimizerLoop(model, training, device, steps_per_epoch * training["max_epochs"])
     start_epoch, best_loss, stale = 0, math.inf, 0
     best_progress = math.inf
     if (directory / "latest.json").exists():
         payload = load_checkpoint(checkpoint_path(directory))
-        if payload["config"] != cfg or payload["dataset_hashes"] != manifest["hashes"]:
+        if (
+            payload["config"] != cfg
+            or payload["dataset_hashes"] != manifest["hashes"]
+            or payload.get("transfer") != transfer
+        ):
             raise ValueError(
                 "Resume config/data differs; use a new run_id for a changed experiment"
             )
@@ -306,6 +350,17 @@ def fit_supervised(root, cfg, manifest):
         return checkpoint_path(directory, "best_validation")
     epoch = start_epoch - 1
     for epoch in range(start_epoch, training["max_epochs"]):
+        frozen = freeze_prefixes if unfreeze_epoch is None or epoch < unfreeze_epoch else ()
+        modules = dict(model.named_modules())
+        if any(prefix not in modules for prefix in frozen):
+            raise ValueError("Unknown module in freeze_prefixes")
+        for name, parameter in model.named_parameters():
+            parameter.requires_grad_(
+                not any(name == prefix or name.startswith(prefix + ".") for prefix in frozen)
+            )
+        if not any(parameter.requires_grad for parameter in model.parameters()):
+            raise ValueError("Fine-tuning must leave at least one trainable parameter")
+        loop.frozen_modules = [modules[prefix] for prefix in frozen]
         started = time.monotonic()
         batches, epoch_policy, epoch_value, updates = [], 0.0, 0.0, 0
         for batch in make_loader(train_data, cfg, device, epoch, shuffle=True):
@@ -347,6 +402,7 @@ def fit_supervised(root, cfg, manifest):
             sampler=dict(next_epoch=epoch + 1, seed=cfg["seed"] + epoch + 1),
             replay_manifest=None,
             league_state=None,
+            transfer=transfer,
         )
         if improved or not (directory / "best_validation.json").exists():
             set_pointer(directory, "best_validation", path)
@@ -361,7 +417,8 @@ def fit_supervised(root, cfg, manifest):
             epoch_seconds=time.monotonic() - started,
         )
         row["source_mae"] = json.dumps(row["source_mae"], sort_keys=True)
-        append_csv(root / "logs" / cfg["run_id"] / "supervised.csv", row)
+        append_csv(root / "logs" / cfg["run_id"] / (log_name + ".csv"), row)
+        atomic_json(directory / "metrics.json", row)
         print(
             f"Epoch {epoch + 1}: val_loss={validation['total_loss']:.5f}, "
             f"legal_top1={validation['top1']:.3f}, checkpoint={path.name}",

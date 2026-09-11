@@ -26,6 +26,9 @@ def main():
     socket.socket = deny_network
     sys.path.insert(0, str(args.candidate.resolve()))
     import agent
+    import inspect
+
+    assert str(inspect.signature(agent.get_move)) == "(fen: str, time_left_ms: int) -> str"
 
     initialization_ms = (time.monotonic() - started) * 1000
     assert agent.device == "cpu" and torch.get_num_threads() == 1

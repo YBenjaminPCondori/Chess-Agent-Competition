@@ -1,6 +1,9 @@
-"""Generate five Colab notebooks with nbformat; shared logic lives in chess_rl."""
+"""Generate the ten active research notebooks and preserve Git originals in an archive."""
 
 from pathlib import Path
+import hashlib
+import json
+import subprocess
 import nbformat as nbf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +23,7 @@ CONFIG = """from chess_rl.config import load_config, prepare_directories
 from chess_rl.reproducibility import metadata, read_json, atomic_json, sha256
 
 prepare_directories(PROJECT_ROOT)
-cfg = load_config(PROJECT_ROOT)
+cfg = load_config(PROJECT_ROOT, "strategy.yaml")
 print("Run:", cfg["run_id"])
 print("Runtime:", metadata())"""
 
@@ -51,7 +54,7 @@ def notebook(title, intro, sections):
 
 
 books = {}
-books["01_chess_environment_and_encoding.ipynb"] = notebook(
+books["01_environment_and_encoding.ipynb"] = notebook(
     "01 - Chess Environment and Encoding",
     "Define the observable chess task, inspect the encodings, and run ordinary correctness tests. "
     "No trained model or measured playing strength is claimed by this notebook.",
@@ -102,18 +105,20 @@ print("History plane sum:", float(encoded[20].sum()))""",
             "Versioned Opening Suites",
             "Reserve independent legal playouts before the corpus. These are valid research fixtures, not certified balanced positions or the hidden platform set. The public eight remain in the reference harness.",
             """from chess_rl.dataset import prepare_openings
-opening_manifest = prepare_openings(PROJECT_ROOT, seed=cfg["seed"])
-print(opening_manifest)""",
+from chess_rl.reservations import prepare_reservations
+reservations = prepare_reservations(PROJECT_ROOT, cfg)
+prepare_openings(PROJECT_ROOT, seed=cfg["seed"])
+print("Reserved suites:", reservations["suites"])""",
         ),
         (
             "Next Notebook",
-            "Open notebook 02. An A100 accelerates gradient updates; Stockfish labels positions on CPU. Every notebook reloads persisted inputs from Drive.",
+            "After 01, notebooks 02 and 03a may run independently or in parallel. Configure real strategy sources before 01; changing sources requires a new reservation_id. Every notebook reloads persisted inputs from Drive.",
             None,
         ),
     ],
 )
 
-books["02_supervised_policy_value_training.ipynb"] = notebook(
+books["02_supervised_broad_training.ipynb"] = notebook(
     "02 - Supervised Policy and Value Training",
     "Acquire labelled positions, train the shared network, and persist validation-selected checkpoints. "
     "Plots use completed epochs; no example scores are pre-filled.",
@@ -148,7 +153,7 @@ if cfg["dataset"]["teacher"] == "stockfish":
         ),
         (
             "Prepare the Dataset",
-            "Supply PGNs or compatible JSONL through the config. Without a corpus, legal playout positions are generated and labelled. The target is 100,000 unique positions. Saved annotation shards support resuming.",
+            "Supply compatible JSONL, such as converted Lichess Eval DB records, through dataset.jsonl_paths, or PGNs through dataset.pgn_paths for teacher labelling. Empty broad sources now stop with a clear error instead of generating synthetic training positions. The target is 100,000 unique positions. Saved annotation shards support resuming PGN teacher labelling.",
             """from chess_rl.dataset import prepare_dataset
 dataset_manifest = prepare_dataset(PROJECT_ROOT, cfg)
 print("Actual split counts:", dataset_manifest["counts"])
@@ -181,6 +186,7 @@ if RUN_MODEL_SEARCH:
     import yaml
     from chess_rl.tuning import run_model_study
     from chess_rl.evaluation import build_research_agent, run_matchup
+    from chess_rl.reservations import load_reservations
     spaces = yaml.safe_load((PROJECT_ROOT / "configs/search_spaces.yaml").read_text())
     shortlist = run_model_study(PROJECT_ROOT, cfg, dataset_manifest, spaces)
     comparisons = []
@@ -188,7 +194,7 @@ if RUN_MODEL_SEARCH:
         checkpoint = PROJECT_ROOT / trial["checkpoint"]
         candidate = build_research_agent(PROJECT_ROOT, checkpoint, trial["config"], "shortlist")
         result = run_matchup(PROJECT_ROOT, candidate, PROJECT_ROOT / "reference/classical_agent",
-                            PROJECT_ROOT / "datasets/openings/development.jsonl",
+                            PROJECT_ROOT / load_reservations(PROJECT_ROOT, cfg)["suites"]["development"],
                             trial["config"], "shortlist-development")
         comparisons.append((result["score"] if result["score"] is not None else -1, checkpoint))
     if not comparisons:
@@ -198,167 +204,301 @@ if RUN_MODEL_SEARCH:
         ),
         (
             "Persist Initialization Choice",
-            "Notebook 03 reads this checkpoint reference. Independent experiments need different run identifiers.",
+            "Notebook 03b and optional stage 04a read this checkpoint reference. Independent experiments need different run identifiers.",
             """atomic_json(PROJECT_ROOT / "results" / cfg["run_id"] / "initial_selection.json",
             {"checkpoint": str(selected_pretraining.relative_to(PROJECT_ROOT)),
              "sha256": sha256(selected_pretraining)})
-print("Notebook 02 complete. Open notebook 03.")""",
+print("Notebook 02 complete. Open 03a_build_strategy_datasets.ipynb.")""",
         ),
     ],
 )
 
-books["03_self_play_league_training.ipynb"] = notebook(
-    "03 - Search-Guided Self-Play and League Training",
-    "Learn policy targets from completed alpha-beta analyses and values from game outcomes. "
-    "Collectors stay frozen during each iteration. CPU matches decide promotion.",
+
+# All research stages use the same reservation and dataset configuration.
+
+books["03a_build_strategy_datasets.ipynb"] = notebook(
+    "03a - Build Strategy Datasets",
+    "CPU only. Supply your own strategy positions; this stage does not train a model. "
+    "All eleven themes are supported. PGN comments and annotations are not imported.",
     [
         (
-            "Load Prepared Inputs",
-            "Notebook 02 must have completed. It does not need to remain open.",
-            """initial = read_json(PROJECT_ROOT / "results" / cfg["run_id"] / "initial_selection.json")
-initial_checkpoint = PROJECT_ROOT / initial["checkpoint"]
-if sha256(initial_checkpoint) != initial["sha256"]:
-    raise ValueError("Initialization checkpoint was modified")
-dataset_manifest = read_json(PROJECT_ROOT / "datasets/manifests" / (cfg["run_id"] + ".json"))
-print("Initialization:", initial_checkpoint)
-print("Self-play settings:", cfg["self_play"])""",
+            "Configure Sources",
+            "Edit configs/strategy.yaml: strategy_dataset.sources accepts PGN, one-FEN-per-line, CSV or JSONL. "
+            "Set theme/subtheme there or in each CSV/JSONL row. A line is a JSON list of legal UCI moves. "
+            "Converted Lichess Puzzle DB and STS-Rating files belong here; motif detector tags must be written before this notebook runs. "
+            "Played moves and lines are observations unless best_move/policy_target is explicitly supplied. "
+            "Optional UCI labelling uses one CPU thread and fails clearly if its configured executable is missing.",
+            """from chess_rl.strategy_taxonomy import TAXONOMY
+for theme, subthemes in TAXONOMY.items():
+    print(theme, ":", ", ".join(subthemes))
+print("Sources:", cfg["strategy_dataset"]["sources"])""",
         ),
         (
-            "Targets and Exploration",
-            "The teacher searches every root action at a common completed depth with full windows. Target probabilities use softmax(score/0.25). Exploration changes the played move, not the target. Missing completed analyses have no policy target. Failed games do not become draw labels.",
+            "Build and Persist",
+            "Whole source games share a split. Positions duplicated across partitions are removed. "
+            "Notebook 01 fixes source partitions and reserved openings before either 02 or 03a. Annotated benchmark games default to test. "
+            "PGNs with common early openings therefore lose those shared positions. Supply enough independent games.",
+            """from chess_rl.strategy_dataset import build_strategy_datasets
+manifest = build_strategy_datasets(PROJECT_ROOT, cfg)
+print("Split counts:", manifest["counts"])
+print("Saved to:", PROJECT_ROOT / "data/strategy" / cfg["strategy_dataset"]["dataset_id"])""",
+        ),
+        (
+            "Summary Tables and Charts",
+            "CSV and JSONL share the documented schema. Small corpora may have empty partitions; "
+            "03b requires labelled train and validation rows. No labels are fabricated to fill a gap.",
+            """from chess_rl.strategy_plots import dataset_summary
+display(dataset_summary(PROJECT_ROOT, cfg["run_id"], manifest))""",
+        ),
+        (
+            "History and Heuristic Limits",
+            "FEN validity checks basic chess constraints, not historical reachability. PGN history is retained as "
+            "moves for repetition diagnostics. FEN alone cannot reveal repetition or prior castling. "
+            "Backward pawns, outposts, trapped pieces, bad bishops and fortress-like positions are diagnostics, "
+            "not adjudications or training labels. Sacrifice, skewer and annotated-game themes require curated tags.",
             None,
         ),
+    ],
+)
+
+books["03b_strategy_finetuning.ipynb"] = notebook(
+    "03b - Strategy Fine-Tuning",
+    "Supervised transfer learning from the completed broad checkpoint in 02. "
+    "Use a GPU runtime for real training; CPU works for small experiments. Self-play is optional and separate.",
+    [
         (
-            "Train or Resume the League",
-            "Default: 10 iterations, 512 games each, 2,000 updates. Saved games and update checkpoints survive disconnects. GPU collection follows the rule clock but does not measure CPU tournament speed.",
-            """from chess_rl.self_play import run_league
-champion = run_league(PROJECT_ROOT, cfg, initial_checkpoint, dataset_manifest)
-print("Retained champion:", champion)""",
+            "Fine-Tuning Configuration",
+            "Edit strategy_finetuning in configs/strategy.yaml. Select themes and manifests; use a distinct "
+            "candidate id for every specialist. The combined model and each selected specialist start independently from 02. "
+            "Defaults: two head-only epochs at 1e-4 then up to eight full epochs at 3e-5; AdamW, cosine, "
+            "weight decay 1e-4, patience 3 in the full phase, 512 CUDA/64 CPU. Frozen BatchNorm stays fixed. "
+            "Each batch is 75% strategy and 25% broad training replay, with theme-balanced strategy sampling.",
+            """import torch
+from chess_rl.strategy_finetuning import load_finetuning_config, finetune_strategy
+cfg = load_finetuning_config(PROJECT_ROOT)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Available training device:", device)
+print(cfg["strategy_finetuning"])""",
         ),
         (
-            "Inspect Promotions",
-            "Promotion requires at least 55% score and a paired 95% interval above 50%, without operational failures. Rejected candidates and results are retained.",
-            """from chess_rl.plots import plot_league
-display(plot_league(PROJECT_ROOT, cfg["run_id"]))
+            "Load Base and Train or Resume",
+            "initial_selection.json from 02 supplies the base checkpoint and checksum. The architecture is loaded "
+            "from that checkpoint. No random replacement is made when the base is missing. "
+            "Training uses legal policy targets and side-to-move values; unlabelled rows are excluded.",
+            """checkpoints = finetune_strategy(PROJECT_ROOT, cfg)
+print("Completed candidates:", checkpoints)""",
+        ),
+        (
+            "Saved Metrics",
+            "Candidates and resume pointers are under models/strategy/<run_id>/<candidate_id>/. "
+            "Epoch checkpoints retain metrics, optimizer, scheduler, RNG and sampling state. Test data is never used for early stopping.",
+            """directory = PROJECT_ROOT / "models/strategy" / cfg["run_id"]
+print(read_json(directory / "completed.json"))
+print("Next: optional 04a/04b, or 05a.")""",
+        ),
+    ],
+)
+
+SELF_PLAY_LOAD = """from chess_rl.research_workflow import self_play_inputs
+initial_checkpoint, dataset_manifest = self_play_inputs(PROJECT_ROOT, cfg)
+print("Frozen initialization:", initial_checkpoint)
+print("Settings:", cfg["self_play"])"""
+
+books["04a_self_play_generation.ipynb"] = notebook(
+    "04a - Self-Play Generation",
+    "Optional RL stage. Collect the next iteration with frozen models on CPU by default. "
+    "Generation does not apply gradient updates; 04b training uses CUDA when available.",
+    [
+        (
+            "Load Initialization",
+            "Default is the completed combined strategy checkpoint. Broad initialization requires strategy explicitly skipped. To override, set "
+            "research_workflow.self_play_initial_checkpoint before beginning a new league run.",
+            SELF_PLAY_LOAD,
+        ),
+        (
+            "Generate or Resume Games",
+            "Records use engine-search policy targets and completed-game results. "
+            "Failed games are excluded from training. Strategy validation/test positions and reserved broad/opening "
+            "positions are excluded. Completed games and their hashes are persisted.",
+            """from chess_rl.self_play import generate_self_play
+generation = generate_self_play(PROJECT_ROOT, cfg, initial_checkpoint, dataset_manifest)
+print("Generation:", generation.get("iteration", generation.get("status")))
+print("Next: 04b_self_play_training_and_promotion.ipynb.")""",
+        ),
+    ],
+)
+
+books["04b_self_play_training_and_promotion.ipynb"] = notebook(
+    "04b - Self-Play Training and Promotion",
+    "Consume completed 04a games, train a candidate, and run CPU promotion matches. "
+    "GPU is recommended for gradient updates. The champion changes only after successful promotion.",
+    [
+        (
+            "Load Inputs",
+            "Run 04a for the next iteration first. A missing or changed generation manifest stops training.",
+            SELF_PLAY_LOAD,
+        ),
+        (
+            "Train and Promote One Iteration",
+            "Resume optimizer updates from complete checkpoints. "
+            "Promotion retains the established score, paired-confidence and runtime-failure criteria.",
+            """from chess_rl.self_play import train_and_promote
+champion = train_and_promote(PROJECT_ROOT, cfg, initial_checkpoint, dataset_manifest)
+print("Retained champion:", champion)
 league = read_json(PROJECT_ROOT / "checkpoints/self_play" / cfg["run_id"] / "league.json")
-for item in league["iterations"]:
-    print(item["iteration"], "promoted:", item["promoted"], "score:", item["summary"]["score"])""",
+print("Completed iterations:", league["completed_iterations"], "/", cfg["self_play"]["iterations"])""",
         ),
         (
-            "Optional Self-Play or Search Study",
-            "Disabled by default. Trials initialize from the same checkpoint in separate folders. Search-only trials reuse weights; self-play trials train for three iterations.",
-            """RUN_SEARCH_STUDY = False
-SEARCH_ONLY = True
-if RUN_SEARCH_STUDY:
-    import yaml
-    from chess_rl.tuning import run_self_play_search_study
-    spaces = yaml.safe_load((PROJECT_ROOT / "configs/search_spaces.yaml").read_text())
-    study_winner = run_self_play_search_study(PROJECT_ROOT, cfg, initial_checkpoint,
-                                             dataset_manifest, spaces, search_only=SEARCH_ONLY)
-    print("Research branch winner, not automatically final:", study_winner)
-print("Open notebook 04 after all selected training runs finish.")""",
+            "Continue the League",
+            "Repeat 04a then 04b until all configured iterations finish. "
+            "This optional runner performs that same alternating sequence for the remaining iterations.",
+            """RUN_REMAINING_ITERATIONS = False
+if RUN_REMAINING_ITERATIONS:
+    from chess_rl.self_play import run_league
+    champion = run_league(PROJECT_ROOT, cfg, initial_checkpoint, dataset_manifest)
+print("Next: 05a after the chosen training runs have completed.")""",
         ),
     ],
 )
 
-books["04_evaluation_and_comparison.ipynb"] = notebook(
-    "04 - Evaluation and Comparison",
-    "Compare frozen candidates on CPU. Development games support selection; held-out games follow freezing. "
-    "This notebook does not run submission compliance.",
+books["05a_evaluate_general_strength.ipynb"] = notebook(
+    "05a - Evaluate General Strength",
+    "CPU only. Compare completed broad, specialist, optional self-play and classical candidates. "
+    "These are research matches, with no submission export checks.",
     [
         (
-            "Load the Retained Champion",
-            "The default final candidate is notebook 03's champion. HPO branches remain separate unless explicitly selected through a documented run.",
-            """league_directory = PROJECT_ROOT / "checkpoints/self_play" / cfg["run_id"]
-print(read_json(league_directory / "complete.json"))
-league = read_json(league_directory / "league.json")
-champion = PROJECT_ROOT / league["champion"]
-previous = PROJECT_ROOT / league["history"][-2] if len(league["history"]) > 1 else None
-initial = read_json(PROJECT_ROOT / "results" / cfg["run_id"] / "initial_selection.json")
-supervised = PROJECT_ROOT / initial["checkpoint"]
-print("Candidate:", champion)
-print("Hash:", sha256(champion))""",
+            "Discover Candidates",
+            "Load or create the immutable candidate registry, independently of 05b. Complete configured training or explicitly skip stages before registration. "
+            "Optional no-RL selections and additional trusted checkpoints can be named in research_workflow. "
+            "Self-play is included only when its configured league has completed.",
+            """import torch
+torch.set_num_threads(1)
+from chess_rl.candidate_registry import load_candidate_registry
+registry = load_candidate_registry(PROJECT_ROOT, cfg)
+candidates = registry["candidates"]
+for candidate in candidates:
+    print(candidate["id"], candidate["kind"], candidate["checkpoint"])""",
         ),
         (
-            "Development Opponents",
-            "128 development positions with colours swapped give 256 games per opponent, at 120 seconds plus 0.5 seconds. The preserved harness uses separate agent processes.",
-            """from chess_rl.evaluation import compare_candidates
-development_results = compare_candidates(PROJECT_ROOT, champion, cfg, previous=previous)
-print(development_results)""",
-        ),
-        (
-            "Development Scores",
-            "Intervals resample opening pairs or source families. The reference is 50%; draws contribute half a point.",
-            """from chess_rl.plots import plot_matches
-display(plot_matches(PROJECT_ROOT, cfg["run_id"], development_results, "development_matches"))""",
-        ),
-        (
-            "Controlled Ablations",
-            "Compare classical search, policy-only, value-only, hybrid, and supervised weights. Clocks and fixtures are shared.",
-            """RUN_ABLATIONS = True
-if RUN_ABLATIONS:
-    from chess_rl.evaluation import run_ablations
-    ablation_results = run_ablations(PROJECT_ROOT, champion, cfg, supervised)
-    display(plot_matches(PROJECT_ROOT, cfg["run_id"], ablation_results, "ablations"))""",
-        ),
-        (
-            "Freeze and Evaluate Held-Out Games",
-            "Complete all selected training and tuning first. This locks the checkpoint and search config. A different model cannot reuse this suite as if it had been preselected.",
-            """heldout_results = compare_candidates(PROJECT_ROOT, champion, cfg, previous=previous, heldout=True)
-display(plot_matches(PROJECT_ROOT, cfg["run_id"], heldout_results, "heldout_matches"))""",
-        ),
-        (
-            "Record Final Selection",
-            "This manifest unlocks notebook 05, recording actual completed training and evaluation.",
-            """from chess_rl.evaluation import finalize_selection
-selection_path = finalize_selection(PROJECT_ROOT, champion, cfg, heldout_results)
-print("Frozen selection:", selection_path)
-print("Notebook 04 complete. Open notebook 05.")""",
+            "Play Common Development Opponents",
+            "All candidates use the same clocks, opening pairs and "
+            "greedy/minimax/original-classical opponents. The development results support selection; "
+            "held-out games wait until 06a freezes one winner.",
+            """from chess_rl.research_workflow import general_evaluation
+general = general_evaluation(PROJECT_ROOT, cfg, candidates)
+for name, opponents in general["results"].items():
+    print(name, {opponent: result["score"] for opponent, result in opponents.items()})
+print("Saved:", PROJECT_ROOT / "results" / cfg["run_id"] / "general_evaluation.json")""",
         ),
     ],
 )
 
-books["05_final_export_and_compliance.ipynb"] = notebook(
-    "05 - Final Export and Compliance",
-    "Run after training and evaluation. Export selected weights, construct a separate candidate, and check its artifacts. "
-    "The starter agent is preserved. Nothing is uploaded automatically.",
+books["05b_evaluate_strategy_suites.ipynb"] = notebook(
+    "05b - Evaluate Strategy Suites",
+    "CPU only. Evaluate all eleven strategy themes with explicit label coverage. "
+    "Validation suites support selection; the frozen winner's test suites, including held-out annotated games, run in 06a.",
     [
         (
-            "Require Frozen Selection",
-            "Earlier workflow completion is required. Failure does not trigger retraining.",
-            """from chess_rl.export import freeze_requirement
+            "Load the Same Candidates",
+            "Load the common registry independently of 05a; no match results are required. It includes the independent classical "
+            "control and any configured no-RL runs. For neural models, top-k compares legal policy rankings; "
+            "move accuracy compares the search-selected move. Classical top-k is unavailable and value is a heuristic.",
+            """import torch
+torch.set_num_threads(1)
+from chess_rl.candidate_registry import load_candidate_registry
+registry = load_candidate_registry(PROJECT_ROOT, cfg)
+candidates = registry["candidates"]
+print("Evaluation split:", cfg["strategy_evaluation"]["split"])""",
+        ),
+        (
+            "Evaluate Themed Suites",
+            "Report move accuracy, top-k agreement, value MAE, legal move rate, "
+            "prediction failures and per-position/per-theme pass/fail/not_assessable counts. "
+            "Neural policy top-1 and top-3 are separate from search agreement. History-dependent cases are reported separately. "
+            "Acceptable move sets are validated; missing labels are not failures. Heuristics are not gold labels.",
+            """from chess_rl.strategy_evaluation import evaluate_candidates
+strategy = evaluate_candidates(PROJECT_ROOT, cfg, candidates)
+from chess_rl.strategy_plots import evaluation_summary
+display(evaluation_summary(PROJECT_ROOT, cfg["run_id"], strategy))""",
+        ),
+        (
+            "Persistent Results",
+            "Per-position observations, summary JSON/CSV and a plot are saved together.",
+            """print(PROJECT_ROOT / "results/strategy_evaluation" / cfg["run_id"] / cfg["strategy_evaluation"]["split"])
+print("Next: 06a_select_and_freeze_winner.ipynb.")""",
+        ),
+    ],
+)
+
+books["06a_select_and_freeze_winner.ipynb"] = notebook(
+    "06a - Select and Freeze Winner",
+    "CPU only. Select from completed candidates using recorded development and strategy-validation evidence, "
+    "freeze the choice, then measure its held-out general and strategy performance.",
+    [
+        (
+            "Selection Criteria",
+            "Reject candidates with runtime/model errors or unusable development results. "
+            "Apply configured minimum general score and optional strategy-pass requirement. Rank by mean opponent "
+            "score, then candidate id for deterministic ties; strategy scores are diagnostic by default. "
+            "Only the leading challenger faces the fixed classical incumbent on the separate 256-game confirmation suite. "
+            "Replacement requires at least 55% score, paired-bootstrap lower bound above 50%, and no runtime failures. "
+            "Failure retains the incumbent; never try another challenger on the same suite. "
+            "The frozen winner cannot be replaced using its test results.",
+            """print(cfg["research_workflow"]["selection"])""",
+        ),
+        (
+            "Freeze and Measure Held-Out Performance",
+            "Lock source hashes, configuration, checkpoint hash, "
+            "opening hashes, evaluation summaries and ranking before held-out games. "
+            "The chosen model alone runs test suites. The final selection works without a self-play checkpoint, "
+            "including when a classical candidate wins.",
+            """from chess_rl.research_workflow import freeze_winner
+selection_path = freeze_winner(PROJECT_ROOT, cfg)
+selection = read_json(selection_path)
+print("Selected:", selection["selected_id"], selection["kind"])
+print("Frozen manifest:", selection_path)
+print("Next: final export notebook 06b.")""",
+        ),
+    ],
+)
+
+books["06b_export_submission.ipynb"] = notebook(
+    "06b - Export Submission",
+    "CPU only, final stage. Export the frozen winner as agent.py and submission.zip, "
+    "then run the final submission checks. Nothing is uploaded automatically.",
+    [
+        (
+            "Load the Frozen Winner",
+            "Require successful completion of 06a and verify its frozen sources, "
+            "configuration, checkpoint and evaluation evidence. The API remains get_move(fen: str, time_left_ms: int) -> str.",
+            """import torch
+torch.set_num_threads(1)
+from chess_rl.export import freeze_requirement
 selection, checkpoint = freeze_requirement(PROJECT_ROOT, cfg["run_id"])
-print("Frozen checkpoint:", checkpoint)
-print("Hash:", selection["checkpoint_sha256"])""",
+print("Winner:", selection["selected_id"], "Checkpoint:", checkpoint)""",
         ),
         (
             "Optional ONNX Dependencies",
-            "PyTorch state_dict is the default. ONNX is final-only and has separate runtime thread settings.",
-            """if selection["config"]["export"]["format"] == "onnx":
+            "Only needed for an explicitly configured neural ONNX export.",
+            """if checkpoint is not None and selection["config"]["export"]["format"] == "onnx":
     subprocess.check_call([sys.executable, "-m", "pip", "install", "onnx", "onnxruntime"])""",
         ),
         (
-            "Export, Inspect, and Play",
-            "Build the ZIP, check CPU reconstruction, measure batch-one latency, and play real games. The 5 ms target is experimental. Unreplicated isolation and human provenance review are reported as not verified.",
-            """from chess_rl.export import final_checks
-report = final_checks(PROJECT_ROOT, cfg["run_id"], live_games=16)
+            "Export and Final Checks",
+            "The selected neural or classical export runs import/API checks, legal "
+            "moves, low-clock timing, CPU-only inference, package integrity/size and agent.py-at-ZIP-root checks. "
+            "It also plays final local games. A failed report requires investigation; this stage does not retrain.",
+            """from chess_rl.export import final_selected_checks
+report = final_selected_checks(PROJECT_ROOT, cfg["run_id"], live_games=16)
 print("Status:", report["status"])
-print("Archive:", report.get("archive"))
-print("Uncompressed bytes:", report.get("unzipped_bytes"))
-print("CPU inference milliseconds:", report.get("inference_ms"))
-print("Checks:", report["checks"])""",
+print("Submission:", report.get("archive", report.get("submission")))
+print("Checks:", report["checks"])
+print("Report:", PROJECT_ROOT / "results" / cfg["run_id"] / "final_compliance.json")""",
         ),
         (
-            "Inspect Files and Logs",
-            "The candidate contains only its runtime source, needed weights, configuration, and manifest.",
-            """print("Candidate directory:", PROJECT_ROOT / "submission_candidate")
-print("Report:", PROJECT_ROOT / "results" / cfg["run_id"] / "final_compliance.json")
-print("Live results:", report.get("live_results"))
-print("Original starter repository was not replaced.")""",
-        ),
-        (
-            "Platform Submission",
-            "The reported ZIP can be uploaded on the dashboard. Only platform validation establishes acceptance. Inspect a failed final report; this workflow does not automatically rerun training.",
+            "Submission",
+            "Use the submission.zip reported above for manual platform submission. "
+            "Local timing is not a measurement of the platform host, and local success is not platform acceptance.",
             None,
         ),
     ],
@@ -366,6 +506,61 @@ print("Original starter repository was not replaced.")""",
 
 destination = ROOT / "notebooks"
 destination.mkdir(exist_ok=True)
-for name, nb in books.items():
-    nbf.write(nb, destination / name)
-    print(name, len(nb.cells), "cells")
+LEGACY_NAMES = (
+    "01_chess_environment_and_encoding.ipynb",
+    "02_supervised_policy_value_training.ipynb",
+    "03_self_play_league_training.ipynb",
+    "04_evaluation_and_comparison.ipynb",
+    "05_final_export_and_compliance.ipynb",
+)
+# Recover exact Git blobs. Exclusive creation prevents replacing earlier archives.
+git_root = Path(
+    subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=ROOT, text=True).strip()
+)
+revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+archive = destination / "archive" / ("legacy-" + revision[:12])
+archive.mkdir(parents=True, exist_ok=True)
+provenance = {}
+for name in LEGACY_NAMES:
+    relative = (destination / name).relative_to(git_root).as_posix()
+    content = subprocess.check_output(["git", "show", revision + ":" + relative], cwd=ROOT)
+    archived = archive / name
+    if not archived.exists():
+        with archived.open("xb") as stream:
+            stream.write(content)
+    if archived.read_bytes() != content:
+        raise ValueError("Existing archive differs; it will not be overwritten")
+    provenance[name] = dict(
+        commit=revision, git_path=relative, sha256=hashlib.sha256(content).hexdigest()
+    )
+manifest_path = archive / "provenance.json"
+if not manifest_path.exists():
+    with manifest_path.open("x") as stream:
+        json.dump(provenance, stream, indent=2)
+dependencies = {
+    "01": [],
+    "02": ["01"],
+    "03a": ["01"],
+    "03b": ["02", "03a"],
+    "04a": ["02", "03b_if_required", "previous_04b"],
+    "04b": ["current_04a"],
+    "05a": ["completed_or_explicitly_skipped_training", "candidate_registry"],
+    "05b": ["completed_or_explicitly_skipped_training", "candidate_registry", "03a_if_sources"],
+    "06a": ["05a", "05b"],
+    "06b": ["06a"],
+}
+for name, book in books.items():
+    stage = name.split("_")[0]
+    book.metadata.research_workflow = dict(stage=stage, depends_on=dependencies[stage])
+    for index, cell in enumerate(book.cells):
+        cell.id = f"cell-{index:03d}"
+    nbf.write(book, destination / name)
+    print(name, len(book.cells), "cells")
+for name in LEGACY_NAMES:
+    path = destination / name
+    if path.exists():
+        if path.read_bytes() != (archive / name).read_bytes():
+            raise ValueError(
+                "Active legacy notebook has edits; preserve it separately before migration"
+            )
+        path.unlink()
